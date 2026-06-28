@@ -1,9 +1,15 @@
 from flask import Flask, render_template, jsonify
+from flask import send_file
+from datetime import datetime
+import pytz
 import serial
 import pickle
 import pandas as pd
 import threading
 import serial.tools.list_ports
+import sqlite3
+
+
 
 ports = list(serial.tools.list_ports.comports())
 for p in ports:
@@ -35,6 +41,8 @@ latest_data = {
 # Background thread function
 def read_serial():
     global latest_data
+    ist = pytz.timezone('Asia/Kolkata')
+    timestamp = datetime.now(ist).isoformat()
 
     while True:
         try:
@@ -50,6 +58,31 @@ def read_serial():
                 continue
 
             bpm, spo2, temp, hum, ax, ay, az, lat, lon = map(float, data)
+
+            # Save reading into SQLite database
+            conn = sqlite3.connect("soldier_health.db")
+
+            cursor = conn.cursor()
+
+            cursor.execute("""
+            INSERT INTO readings
+            (timestamp, bpm, spo2, temperature, humidity, ax, ay, az, latitude, longitude)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                timestamp, 
+                bpm,
+                spo2,
+                temp,
+                hum,
+                int(ax),
+                int(ay),
+                int(az),
+                lat,
+                lon
+            ))
+
+            conn.commit()
+            conn.close()
 
             if (bpm == 0 or spo2 == 0 or temp == 0 or hum == 0 or
                 ax == 0 or ay == 0 or az == 0 or lat == 0 or lon == 0):
@@ -92,6 +125,47 @@ def index():
 @app.route('/data')
 def data():
     return jsonify(latest_data)
+
+@app.route('/history')
+def history():
+
+    conn = sqlite3.connect("soldier_health.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT timestamp,
+           bpm,
+           spo2,
+           temperature,
+           humidity,
+           ax,
+           ay,
+           az,
+           latitude,
+           longitude
+    FROM readings
+    ORDER BY id DESC
+    LIMIT 10
+    """)
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return jsonify(rows)
+
+@app.route('/download_csv')
+def download_csv():
+
+    import subprocess
+
+    # Generate latest CSV
+    subprocess.run(["python", "export_csv.py"])
+
+    return send_file(
+        "soldier_health_log.csv",
+        as_attachment=True
+    )
 
 
 # Start thread before Flask runs
